@@ -27,8 +27,8 @@ B. PROJECT FILES
     public/site.js         Rides, seat map, passenger and ticket flow
     public/app.js          Operations actions, SQL, table explorer and logs
     public/style.css       Responsive CABNATION visual styles
-+    api/index.js           Vercel serverless entry for the Express app
-+    vercel.json            Route rewrites for the Vercel deployment
+    api/index.js           Vercel serverless entry for the Express app
+    vercel.json            Route rewrites for the Vercel deployment
     server.js              Express routes and transaction logic
     db.js                  MySQL pool, safe table-read whitelist, helpers
     schema.sql             Tables, keys, constraints and triggers
@@ -202,7 +202,7 @@ Requirements: Node.js 18+ and MySQL 8.0.16+.
     mysql -u root -p < seed.sql
     npm start
 
-Open http://localhost:3000. schema.sql drops and recreates the cabnation
+Open http://localhost:3001. schema.sql drops and recreates the cabnation
 database. seed.sql clears and restores only its sample rows. Do not run these
 against data you need.
 

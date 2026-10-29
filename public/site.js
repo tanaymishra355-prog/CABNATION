@@ -15,6 +15,17 @@ const site = {
 const $s = (id) => document.getElementById(id);
 const money = new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 });
 
+// Connection-level failures get calm, actionable copy; real database errors
+// (duplicate email 1062, seat already booked 1644, ...) pass through unchanged.
+function friendlyError(error) {
+  const raw = error.message || '';
+  const code = String(error.code || '');
+  if (code.includes('ECONNREFUSED') || code === '-111' || /ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|ER_ACCESS_DENIED_ERROR/.test(code + ' ' + raw)) {
+    return 'The booking database is not reachable. Start MySQL, run schema.sql and seed.sql (or set DB_HOST to a hosted database), then reload.';
+  }
+  return error.code ? `[${error.code}] ${raw}` : raw;
+}
+
 async function jfetch(path, options) {
   const response = await fetch(path, options);
   let body;
@@ -129,7 +140,7 @@ async function loadSiteRides() {
       appendText(price, 'small', '', `${ride.free_seats} seats left`);
 
       button.addEventListener('click', () => {
-        selectRide(ride.ride_id).catch((error) => { $s('ride-error').textContent = error.message; });
+        selectRide(ride.ride_id).catch((error) => { $s('ride-error').textContent = friendlyError(error); });
       });
       item.appendChild(button);
       list.appendChild(item);
@@ -141,7 +152,7 @@ async function loadSiteRides() {
     count.textContent = 'Rides unavailable';
     list.textContent = '';
     appendText(list, 'li', 'empty-state', 'We couldn’t load rides. Check that the app and database are running.');
-    $s('ride-error').textContent = error.message;
+    $s('ride-error').textContent = friendlyError(error);
   }
 }
 
@@ -226,7 +237,7 @@ function selectCabSeat(seat) {
   }
   $s('pax-error').textContent = '';
   site.seat = seat;
-  loadCab().catch((error) => { $s('site-error').textContent = error.message; });
+  loadCab().catch((error) => { $s('site-error').textContent = friendlyError(error); });
   updateSummary();
 }
 
@@ -275,7 +286,7 @@ async function addPassenger() {
     window.dispatchEvent(new Event('cabnation:passengers-changed'));
     updateSummary();
   } catch (error) {
-    $s('np-error').textContent = error.code ? `[${error.code}] ${error.message}` : error.message;
+    $s('np-error').textContent = friendlyError(error);
   }
 }
 
@@ -320,7 +331,7 @@ async function siteBook() {
     await showTicket(bookingId);
   } catch (error) {
     if (error.trace) renderSiteTrace(error.trace);
-    $s('site-error').textContent = error.code ? `[${error.code}] ${error.message}` : error.message;
+    $s('site-error').textContent = friendlyError(error);
   }
 
   await Promise.all([loadSiteRides(), loadMyTickets()]);
@@ -379,7 +390,7 @@ async function loadMyTickets() {
       list.appendChild(item);
     }
   } catch (error) {
-    $s('rides-error').textContent = error.message;
+    $s('rides-error').textContent = friendlyError(error);
   }
 }
 
@@ -390,7 +401,7 @@ async function cancelTicket(bookingId) {
     renderSiteTrace(body.trace);
   } catch (error) {
     if (error.trace) renderSiteTrace(error.trace);
-    $s('rides-error').textContent = error.code ? `[${error.code}] ${error.message}` : error.message;
+    $s('rides-error').textContent = friendlyError(error);
   }
   await Promise.all([loadMyTickets(), loadSiteRides()]);
   updateSummary();
@@ -429,7 +440,7 @@ function initSite() {
 
   loadSiteRides();
   loadSitePassengers().then(loadMyTickets).catch((error) => {
-    $s('pax-error').textContent = `Passenger list unavailable: ${error.message}`;
+    $s('pax-error').textContent = `Passenger list unavailable: ${friendlyError(error)}`;
   });
 }
 

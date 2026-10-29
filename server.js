@@ -33,11 +33,20 @@ function sqlStatements(sqlText) {
     .filter(Boolean);
 }
 
-async function runSqlFile(conn, fileName) {
+async function runSqlFile(conn, fileName, tolerant = false) {
   const sqlText = fs.readFileSync(path.join(__dirname, fileName), 'utf8');
   const statements = sqlStatements(sqlText);
-  for (const statement of statements) await conn.query(statement);
-  return statements.length;
+  const skipped = [];
+  for (const [index, statement] of statements.entries()) {
+    try {
+      await conn.query(statement);
+    } catch (error) {
+      if (!tolerant) throw error;
+      const detail = dbError(error);
+      skipped.push({ statement: index + 1, code: detail.code, message: detail.message.slice(0, 120), sql: statement.slice(0, 60) });
+    }
+  }
+  return { applied: statements.length - skipped.length, skipped };
 }
 
 function tempConnection() {
@@ -46,9 +55,18 @@ function tempConnection() {
     user: process.env.DB_USER,
     password: process.env.DB_PASSWORD,
     database: process.env.DB_NAME,
+    port: process.env.DB_PORT || 3306,
     dateStrings: true,
     ssl: process.env.DB_SSL === 'true' ? { minVersion: 'TLSv1.2', rejectUnauthorized: true } : undefined,
   });
+}
+
+// Hosted deployments set SETUP_TOKEN; then destructive endpoints require the
+// x-setup-token header. Local demos with no token stay one-click and open.
+function tokenOk(req) {
+  const expected = process.env.SETUP_TOKEN;
+  if (!expected) return true;
+  return req.get('x-setup-token') === expected;
 }
 
 // A ticket, payment and optional luggage entry commit together or roll back
@@ -117,9 +135,10 @@ async function bookSeat(conn, options, trace, actor = 'APP') {
 }
 
 app.get('/api/health', wrap(async (req, res) => {
-  const [rows] = await pool.query('SELECT DATABASE() AS database_name');
-  const databaseName = rows[0].database_name;
-  if (databaseName !== 'cabnation') {
+  const [rows] = await pool.query('SELECT DATABASE() AS database_name, VERSION() AS db_version');
+  const databaseName = String(rows[0].database_name || '');
+  const dbVersion = rows[0].db_version;
+  if (databaseName.toLowerCase() !== 'cabnation') {
     return res.status(503).json({
       ok: false,
       code: 'WRONG_DATABASE',
@@ -127,7 +146,7 @@ app.get('/api/health', wrap(async (req, res) => {
     });
   }
   await pool.query('SELECT 1 FROM rides LIMIT 1');
-  res.json({ ok: true, db: 'connected', database: databaseName });
+  res.json({ ok: true, db: 'connected', database: databaseName, dbVersion });
 }));
 
 app.get('/api/rides', wrap(async (req, res) => {
@@ -263,12 +282,16 @@ app.post('/api/book', async (req, res) => {
       trace.push({ ts: ts(), actor: 'APP', step: 'ROLLBACK', status: 'ERROR' });
     } catch (_) { /* the connection may already be gone */ }
     const detail = dbError(error);
+    const seatRace = Number(detail.code) === 1062 || Number(detail.code) === 1213;
     res.status(409).json({
       ok: false,
       committed: false,
-      code: detail.code,
+      code: seatRace ? 'SEAT_TAKEN' : detail.code,
       sqlState: detail.sqlState,
-      message: detail.message,
+      message: seatRace
+        ? 'Another booking just took this seat — pick a different one.'
+        : detail.message,
+      rawCode: detail.code,
       trace,
     });
   } finally {
@@ -357,16 +380,10 @@ app.post('/api/isolation-demo', async (req, res) => {
   if (![rideId, seatId, passengerId].every((value) => Number.isInteger(value) && value > 0)) {
     return res.status(400).json({ ok: false, code: 'BAD_INPUT', message: 'ride_id, seat_id and passenger_id must be positive integers' });
   }
-  const [occupied] = await pool.query(
-    "SELECT booking_id FROM bookings WHERE seat_id = ? AND status = 'CONFIRMED'",
-    [seatId],
-  );
-  if (occupied.length) {
-    return res.status(409).json({ ok: false, code: 'SEAT_BUSY', message: 'isolation demo needs a free seat — choose one in the seat map' });
-  }
 
   const connA = await pool.getConnection();
   let connB;
+  let attemptB = null;
   try {
     connB = await pool.getConnection();
     await connA.query('SET SESSION innodb_lock_wait_timeout = 5');
@@ -381,6 +398,16 @@ app.post('/api/isolation-demo', async (req, res) => {
       throw error;
     }
     trace.push({ ts: ts(), actor: 'A', step: `SELECT seat ${seats[0].seat_no} FOR UPDATE -> lock held`, status: 'OK' });
+    // Occupancy is checked while A holds the seat row lock, so the check and
+    // the booking are one atomic step (no check-then-act race).
+    const [taken] = await connA.query(
+      "SELECT booking_id FROM bookings WHERE seat_id = ? AND status = 'CONFIRMED'",
+      [seatId],
+    );
+    if (taken.length) {
+      await connA.rollback();
+      return res.status(409).json({ ok: false, committed: false, code: 'SEAT_BUSY', message: 'isolation demo needs a free seat — choose one in the seat map', trace });
+    }
     const [bookingA] = await connA.query(
       "INSERT INTO bookings (ride_id, seat_id, passenger_id, status) VALUES (?, ?, ?, 'CONFIRMED')",
       [rideId, seatId, passengerId],
@@ -389,7 +416,7 @@ app.post('/api/isolation-demo', async (req, res) => {
     await connA.query("INSERT INTO payments (booking_id, amount, status) VALUES (?, ?, 'PAID')", [bookingA.insertId, seats[0].fare]);
     trace.push({ ts: ts(), actor: 'A', step: `INSERT payments -> amount ${seats[0].fare} (uncommitted)`, status: 'OK' });
 
-    const attemptB = bookSeat(connB, { rideId, seatId, passengerId, luggageKg: 0, failAt: null }, trace, 'B');
+    attemptB = bookSeat(connB, { rideId, seatId, passengerId, luggageKg: 0, failAt: null }, trace, 'B');
     await sleep(1200);
     const [transactions] = await pool.query(
       'SELECT trx_state FROM information_schema.INNODB_TRX WHERE trx_mysql_thread_id = ?',
@@ -416,6 +443,12 @@ app.post('/api/isolation-demo', async (req, res) => {
     }
     res.json({ ok: true, committed: true, trace, b_failed: bFailed });
   } catch (error) {
+    // Never release connB with an open transaction: settle B first, then roll
+    // back both connections so the pool never inherits either transaction.
+    if (attemptB) {
+      try { await attemptB; } catch (_) { /* B failed or already settled */ }
+    }
+    try { await connB.rollback(); } catch (_) { /* B may not have begun */ }
     try { await connA.rollback(); } catch (_) { /* A may not have begun */ }
     const detail = dbError(error);
     res.status(500).json({ ok: false, committed: false, code: detail.code, sqlState: detail.sqlState, message: detail.message, trace });
@@ -433,6 +466,11 @@ app.post('/api/query', wrap(async (req, res) => {
   if (body.includes(';')) return res.status(400).json({ ok: false, code: 'MULTI', message: 'only a single statement is allowed' });
   if (!['SELECT', 'INSERT', 'UPDATE', 'DELETE'].includes(first)) {
     return res.status(400).json({ ok: false, code: 'FORBIDDEN', message: `only SELECT, INSERT, UPDATE, DELETE are allowed (got ${first || 'nothing'})` });
+  }
+  // Hosted deployments set SETUP_TOKEN; there the console is read-only unless
+  // the request carries the token. Local demos keep full teaching access.
+  if (!tokenOk(req) && first !== 'SELECT') {
+    return res.status(403).json({ ok: false, code: 'FORBIDDEN', message: 'write statements need the x-setup-token header in hosted deployments' });
   }
   try {
     const [rows, fields] = await pool.query(body);
@@ -460,45 +498,59 @@ app.get('/api/logs/audit', wrap(async (req, res) => {
 app.get('/api/logs/general', wrap(async (req, res) => {
   const [generalLog] = await pool.query('SELECT @@general_log AS enabled');
   if (!generalLog[0].enabled) return res.json({ ok: true, enabled: false, rows: [] });
-  const [rows] = await pool.query(
-    `SELECT event_time, user_host, command_type,
-            CAST(argument AS CHAR CHARACTER SET utf8mb4) AS argument
-     FROM mysql.general_log
-     WHERE user_host LIKE ? AND argument NOT LIKE '%general_log%'
-     ORDER BY event_time DESC, thread_id DESC LIMIT 30`,
-    [`${process.env.DB_USER}%`],
-  );
-  res.json({ ok: true, enabled: true, rows });
+  try {
+    const [rows] = await pool.query(
+      `SELECT event_time, user_host, command_type,
+              CAST(argument AS CHAR CHARACTER SET utf8mb4) AS argument
+       FROM mysql.general_log
+       WHERE user_host LIKE ? AND argument NOT LIKE '%general_log%'
+       ORDER BY event_time DESC, thread_id DESC LIMIT 30`,
+      [`${process.env.DB_USER}%`],
+    );
+    res.json({ ok: true, enabled: true, rows });
+  } catch (_) {
+    // Hosted users typically lack privileges on mysql.*; that is expected.
+    res.json({ ok: true, enabled: true, rows: [], note: 'no privilege to read mysql.general_log on this host' });
+  }
 }));
 
 // One-time hosted-database bootstrap: creates tables, triggers and sample data
 // without CREATE DATABASE (managed MySQL refuses it). Guarded by SETUP_TOKEN.
+// Tolerant mode: on trigger-less managed hosts (TiDB, PlanetScale) the trigger
+// statements are skipped and everything else still installs.
 app.post('/api/setup', wrap(async (req, res) => {
-  const token = process.env.SETUP_TOKEN;
-  if (!token || req.get('x-setup-token') !== token) {
+  if (!tokenOk(req)) {
     return res.status(403).json({ ok: false, code: 'FORBIDDEN', message: 'missing or wrong x-setup-token header' });
   }
   const conn = await tempConnection();
   try {
-    const schemaStatements = await runSqlFile(conn, 'schema.sql');
-    const seedStatements = await runSqlFile(conn, 'seed.sql');
-    res.json({ ok: true, message: 'cabnation schema and sample data are ready', schemaStatements, seedStatements });
+    const schema = await runSqlFile(conn, 'schema.sql', true);
+    const seed = await runSqlFile(conn, 'seed.sql', true);
+    res.json({
+      ok: true,
+      message: 'cabnation schema and sample data are ready',
+      schema: { applied: schema.applied, skipped: schema.skipped },
+      seed: { applied: seed.applied, skipped: seed.skipped },
+    });
   } finally {
     await conn.end();
   }
 }));
 
 app.post('/api/reset', wrap(async (req, res) => {
+  if (!tokenOk(req)) {
+    return res.status(403).json({ ok: false, code: 'FORBIDDEN', message: 'resetting sample data is token-gated in hosted deployments' });
+  }
   const conn = await tempConnection();
   try {
-    const statements = await runSqlFile(conn, 'seed.sql');
+    const result = await runSqlFile(conn, 'seed.sql');
     let logCleared = true;
     try {
       await conn.query('TRUNCATE TABLE mysql.general_log');  // local MySQL only; hosted users lack the privilege
     } catch (_) {
       logCleared = false;
     }
-    res.json({ ok: true, message: 'CABNATION sample data reset', statements, logCleared });
+    res.json({ ok: true, message: 'CABNATION sample data reset', statements: result.applied, logCleared });
   } finally {
     await conn.end();
   }
@@ -512,9 +564,17 @@ function wrap(handler) {
   });
 }
 
+// Malformed JSON bodies surface as 400 instead of the generic 500.
+app.use((error, req, res, next) => {
+  if (error && error.type === 'entity.parse.failed') {
+    return res.status(400).json({ ok: false, code: 'BAD_JSON', message: 'request body is not valid JSON' });
+  }
+  next(error);
+});
+
 module.exports = app;
 
 if (require.main === module) {
-  const PORT = process.env.PORT || 3000;
+  const PORT = process.env.PORT || 3001;
   app.listen(PORT, () => console.log(`CABNATION listening on http://localhost:${PORT}`));
 }

@@ -64,7 +64,7 @@ Requirements: Node.js 18+ and MySQL 8.0.16+ (the project uses enforced `CHECK` c
 2. Copy `.env.example` to `.env` and set your local MySQL user and password.
 3. Run `mysql -u root -p < schema.sql`.
 4. Run `mysql -u root -p < seed.sql`.
-5. Start the app with `npm start` and open [http://localhost:3000](http://localhost:3000).
+5. Start the app with `npm start` and open [http://localhost:3001](http://localhost:3001).
 
 **Important:** `schema.sql` drops and recreates the `cabnation` database. Do not run it against a database containing data you need.
 
