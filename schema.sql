@@ -29,12 +29,12 @@ CREATE TABLE rides (
   dropoff_id    INT UNSIGNED NOT NULL,
   pickup_at DATETIME     NOT NULL,
   dropoff_at DATETIME     NOT NULL,
-  CONSTRAINT fk_trip_bus    FOREIGN KEY (cab_id)    REFERENCES cabs (cab_id)         ON DELETE RESTRICT,
-  CONSTRAINT fk_trip_origin FOREIGN KEY (pickup_id) REFERENCES stands (stand_id) ON DELETE RESTRICT,
-  CONSTRAINT fk_trip_dest   FOREIGN KEY (dropoff_id)   REFERENCES stands (stand_id) ON DELETE RESTRICT,
-  CONSTRAINT chk_trip_route CHECK (pickup_id <> dropoff_id),
-  CONSTRAINT chk_trip_times CHECK (dropoff_at > pickup_at),
-  KEY idx_trip_departure (pickup_at)
+  CONSTRAINT fk_ride_cab    FOREIGN KEY (cab_id)    REFERENCES cabs (cab_id)         ON DELETE RESTRICT,
+  CONSTRAINT fk_ride_pickup FOREIGN KEY (pickup_id) REFERENCES stands (stand_id) ON DELETE RESTRICT,
+  CONSTRAINT fk_ride_dropoff   FOREIGN KEY (dropoff_id)   REFERENCES stands (stand_id) ON DELETE RESTRICT,
+  CONSTRAINT chk_ride_route CHECK (pickup_id <> dropoff_id),
+  CONSTRAINT chk_ride_times CHECK (dropoff_at > pickup_at),
+  KEY idx_ride_pickup (pickup_at)
 ) ENGINE = InnoDB;
 
 CREATE TABLE seats (
@@ -43,9 +43,9 @@ CREATE TABLE seats (
   seat_no VARCHAR(4)   NOT NULL,
   class   ENUM('STANDARD','FRONT_ROW') NOT NULL DEFAULT 'STANDARD',
   fare    DECIMAL(10,2) NOT NULL,
-  CONSTRAINT uq_trip_seat UNIQUE (ride_id, seat_no),
-  CONSTRAINT uq_seat_trip_pair UNIQUE (ride_id, seat_id),
-  CONSTRAINT fk_seat_trip FOREIGN KEY (ride_id) REFERENCES rides (ride_id) ON DELETE RESTRICT,
+  CONSTRAINT uq_ride_seat UNIQUE (ride_id, seat_no),
+  CONSTRAINT uq_seat_ride_pair UNIQUE (ride_id, seat_id),
+  CONSTRAINT fk_seat_ride FOREIGN KEY (ride_id) REFERENCES rides (ride_id) ON DELETE RESTRICT,
   CONSTRAINT chk_seat_fare CHECK (fare >= 0)
 ) ENGINE = InnoDB;
 
@@ -69,7 +69,7 @@ CREATE TABLE bookings (
   created_at   DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   CONSTRAINT uq_active_booking_seat UNIQUE (active_seat_id),
   KEY idx_booking_seat_status (seat_id, status),
-  CONSTRAINT fk_booking_trip_seat FOREIGN KEY (ride_id, seat_id)
+  CONSTRAINT fk_booking_ride_seat FOREIGN KEY (ride_id, seat_id)
     REFERENCES seats (ride_id, seat_id) ON DELETE RESTRICT,
   CONSTRAINT fk_booking_passenger FOREIGN KEY (passenger_id)
     REFERENCES passengers (passenger_id) ON DELETE RESTRICT

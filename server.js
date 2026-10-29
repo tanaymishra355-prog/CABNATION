@@ -68,16 +68,16 @@ async function bookSeat(conn, options, trace, actor = 'APP') {
     throw error;
   }
   const seat = seats[0];
-  if (seat.ride_id !== options.tripId) {
+  if (seat.ride_id !== options.rideId) {
     const error = new Error('Seat is not on this ride');
-    error.code = 'SEAT_TRIP_MISMATCH';
+    error.code = 'SEAT_RIDE_MISMATCH';
     throw error;
   }
   step(`SELECT seat ${seat.seat_no} FOR UPDATE -> row lock held`);
 
   const [booking] = await conn.query(
     "INSERT INTO bookings (ride_id, seat_id, passenger_id, status) VALUES (?, ?, ?, 'CONFIRMED')",
-    [options.tripId, options.seatId, options.passengerId],
+    [options.rideId, options.seatId, options.passengerId],
   );
   step(`INSERT bookings -> booking_id ${booking.insertId}`);
   if (options.failAt === 'booking') {
@@ -208,8 +208,8 @@ app.get('/api/bookings', wrap(async (req, res) => {
 }));
 
 app.get('/api/rides/:id/seats', wrap(async (req, res) => {
-  const tripId = Number(req.params.id);
-  if (!Number.isInteger(tripId) || tripId <= 0) {
+  const rideId = Number(req.params.id);
+  if (!Number.isInteger(rideId) || rideId <= 0) {
     return res.status(400).json({ ok: false, code: 'BAD_INPUT', message: 'ride id must be a positive integer' });
   }
   const [rows] = await pool.query(
@@ -220,7 +220,7 @@ app.get('/api/rides/:id/seats', wrap(async (req, res) => {
      LEFT JOIN passengers p ON p.passenger_id = b.passenger_id
      WHERE s.ride_id = ?
      ORDER BY s.seat_no`,
-    [tripId],
+    [rideId],
   );
   res.json({ ok: true, rows });
 }));
@@ -236,13 +236,13 @@ app.get('/api/table/:name', wrap(async (req, res) => {
 
 app.post('/api/book', async (req, res) => {
   const body = req.body || {};
-  const tripId = Number(body.ride_id);
+  const rideId = Number(body.ride_id);
   const seatId = Number(body.seat_id);
   const passengerId = Number(body.passenger_id);
   const luggageKg = body.luggage_kg == null ? 0 : Number(body.luggage_kg);
   const failAt = body.fail_at || null;
 
-  if (![tripId, seatId, passengerId].every((value) => Number.isInteger(value) && value > 0)) {
+  if (![rideId, seatId, passengerId].every((value) => Number.isInteger(value) && value > 0)) {
     return res.status(400).json({ ok: false, code: 'BAD_INPUT', message: 'ride_id, seat_id and passenger_id must be positive integers' });
   }
   if (!Number.isInteger(luggageKg) || luggageKg < 0 || luggageKg > 40) {
@@ -255,7 +255,7 @@ app.post('/api/book', async (req, res) => {
   const conn = await pool.getConnection();
   const trace = [];
   try {
-    const result = await bookSeat(conn, { tripId, seatId, passengerId, luggageKg, failAt }, trace);
+    const result = await bookSeat(conn, { rideId, seatId, passengerId, luggageKg, failAt }, trace);
     res.json({ ok: true, committed: true, booking_id: result.bookingId, trace });
   } catch (error) {
     try {
@@ -350,11 +350,11 @@ app.post('/api/constraint-demo', wrap(async (req, res) => {
 
 app.post('/api/isolation-demo', async (req, res) => {
   const body = req.body || {};
-  const tripId = Number(body.ride_id);
+  const rideId = Number(body.ride_id);
   const seatId = Number(body.seat_id);
   const passengerId = Number(body.passenger_id || 1);
   const trace = [];
-  if (![tripId, seatId, passengerId].every((value) => Number.isInteger(value) && value > 0)) {
+  if (![rideId, seatId, passengerId].every((value) => Number.isInteger(value) && value > 0)) {
     return res.status(400).json({ ok: false, code: 'BAD_INPUT', message: 'ride_id, seat_id and passenger_id must be positive integers' });
   }
   const [occupied] = await pool.query(
@@ -374,22 +374,22 @@ app.post('/api/isolation-demo', async (req, res) => {
 
     await connA.beginTransaction();
     trace.push({ ts: ts(), actor: 'A', step: 'BEGIN', status: 'OK' });
-    const [seats] = await connA.query('SELECT seat_no, fare FROM seats WHERE seat_id = ? AND ride_id = ? FOR UPDATE', [seatId, tripId]);
+    const [seats] = await connA.query('SELECT seat_no, fare FROM seats WHERE seat_id = ? AND ride_id = ? FOR UPDATE', [seatId, rideId]);
     if (!seats.length) {
       const error = new Error('Seat is not on this ride');
-      error.code = 'SEAT_TRIP_MISMATCH';
+      error.code = 'SEAT_RIDE_MISMATCH';
       throw error;
     }
     trace.push({ ts: ts(), actor: 'A', step: `SELECT seat ${seats[0].seat_no} FOR UPDATE -> lock held`, status: 'OK' });
     const [bookingA] = await connA.query(
       "INSERT INTO bookings (ride_id, seat_id, passenger_id, status) VALUES (?, ?, ?, 'CONFIRMED')",
-      [tripId, seatId, passengerId],
+      [rideId, seatId, passengerId],
     );
     trace.push({ ts: ts(), actor: 'A', step: `INSERT bookings -> booking_id ${bookingA.insertId} (uncommitted)`, status: 'OK' });
     await connA.query("INSERT INTO payments (booking_id, amount, status) VALUES (?, ?, 'PAID')", [bookingA.insertId, seats[0].fare]);
     trace.push({ ts: ts(), actor: 'A', step: `INSERT payments -> amount ${seats[0].fare} (uncommitted)`, status: 'OK' });
 
-    const attemptB = bookSeat(connB, { tripId, seatId, passengerId, luggageKg: 0, failAt: null }, trace, 'B');
+    const attemptB = bookSeat(connB, { rideId, seatId, passengerId, luggageKg: 0, failAt: null }, trace, 'B');
     await sleep(1200);
     const [transactions] = await pool.query(
       'SELECT trx_state FROM information_schema.INNODB_TRX WHERE trx_mysql_thread_id = ?',

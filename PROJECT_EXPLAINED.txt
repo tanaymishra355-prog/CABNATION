@@ -45,7 +45,7 @@ The cabnation database has 11 tables:
 
 - stands: boarding and arrival stands, city and short code.
 - cabs: operator, cab name and service type.
-- rides: one scheduled run, its cab, two stands and departure/arrival.
+- rides: one scheduled run, its cab, two stands and pickup/dropoff.
 - seats: seats and fares for a particular ride; rows 1–2 are front row.
 - passengers: a person's name, unique email and optional phone.
 - bookings: a passenger's confirmed or cancelled ticket and selected seat.
@@ -146,7 +146,7 @@ Indexes. You never write CREATE INDEX, yet indexes exist everywhere:
 
 The seat-lock demo's subquery WHERE seat_id = ... AND status = 'CONFIRMED'
 is fast because the schema adds KEY idx_booking_seat_status (seat_id, status),
-and ride listings sort by pickup_at through KEY idx_trip_departure.
+and ride listings sort by pickup_at through KEY idx_ride_pickup.
 
 Demonstrate with: SHOW CREATE TABLE bookings; (the SQL box only allows
 SELECT/INSERT/UPDATE/DELETE, so run SHOW in the MySQL console).

@@ -3,7 +3,7 @@
 
 const state = {
   rides: [],
-  tripId: null,
+  rideId: null,
   seatId: null,
   selectedBookingId: null,
   passengers: [],
@@ -67,10 +67,10 @@ async function loadRides() {
     option.textContent = `${ride.ride_no}  ${ride.pickup_code}–${ride.dropoff_code}  ${ride.pickup_at}`;
     select.appendChild(option);
   }
-  if (!state.rides.some((ride) => ride.ride_id === state.tripId)) {
-    state.tripId = state.rides[0] ? state.rides[0].ride_id : null;
+  if (!state.rides.some((ride) => ride.ride_id === state.rideId)) {
+    state.rideId = state.rides[0] ? state.rides[0].ride_id : null;
   }
-  if (state.tripId != null) select.value = String(state.tripId);
+  if (state.rideId != null) select.value = String(state.rideId);
   await refreshSeatMap();
 }
 
@@ -94,8 +94,8 @@ async function loadPassengers() {
 async function refreshSeatMap() {
   const map = $('seat-map');
   map.textContent = '';
-  if (state.tripId == null) return;
-  const body = await api(`/api/rides/${state.tripId}/seats`);
+  if (state.rideId == null) return;
+  const body = await api(`/api/rides/${state.rideId}/seats`);
   for (const seat of body.rows) {
     const button = document.createElement('button');
     button.type = 'button';
@@ -132,7 +132,7 @@ function selectSeat(seat) {
 // One transaction per ticket: booking + payment + optional luggage.
 async function runBook(forceFail = false) {
   $('book-error').textContent = '';
-  if (state.tripId == null || state.seatId == null || state.selectedBookingId != null) {
+  if (state.rideId == null || state.seatId == null || state.selectedBookingId != null) {
     $('book-error').textContent = 'Choose an available seat first.';
     return;
   }
@@ -147,7 +147,7 @@ async function runBook(forceFail = false) {
   }
   try {
     const body = await post('/api/book', {
-      ride_id: state.tripId,
+      ride_id: state.rideId,
       seat_id: state.seatId,
       passenger_id: Number($('passenger-select').value),
       luggage_kg: Number($('luggage-kg').value) || 0,
@@ -204,7 +204,7 @@ async function runConceptDemo(type) {
 
 async function runIsolationDemo() {
   $('concept-error').textContent = '';
-  if (state.tripId == null || state.seatId == null || state.selectedBookingId != null) {
+  if (state.rideId == null || state.seatId == null || state.selectedBookingId != null) {
     $('concept-error').textContent = 'Select an available seat in the seat map first.';
     return;
   }
@@ -214,7 +214,7 @@ async function runIsolationDemo() {
   }
   try {
     const body = await post('/api/isolation-demo', {
-      ride_id: state.tripId,
+      ride_id: state.rideId,
       seat_id: state.seatId,
       passenger_id: Number($('passenger-select').value),
     });
@@ -433,7 +433,7 @@ function pollEverything() {
 
 function initConsole() {
   $('ride-select').addEventListener('change', (event) => {
-    state.tripId = Number(event.target.value) || null;
+    state.rideId = Number(event.target.value) || null;
     state.seatId = null;
     state.selectedBookingId = null;
     $('btn-cancel').disabled = true;

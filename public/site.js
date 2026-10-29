@@ -4,7 +4,7 @@
 const site = {
   view: 'site',
   rides: [],
-  tripId: null,
+  rideId: null,
   ride: null,
   seat: null,
   passengers: [],
@@ -83,17 +83,17 @@ async function loadSiteRides() {
     const body = await jfetch('/api/rides');
     site.rides = body.rows;
     list.textContent = '';
-    count.textContent = `${site.rides.length} ${site.rides.length === 1 ? 'departure' : 'departures'}`;
+    count.textContent = `${site.rides.length} ${site.rides.length === 1 ? 'ride' : 'rides'}`;
 
-    if (!site.rides.some((ride) => ride.ride_id === site.tripId)) {
-      site.tripId = site.rides[0] ? site.rides[0].ride_id : null;
+    if (!site.rides.some((ride) => ride.ride_id === site.rideId)) {
+      site.rideId = site.rides[0] ? site.rides[0].ride_id : null;
       site.seat = null;
     }
-    site.ride = site.rides.find((ride) => ride.ride_id === site.tripId) || null;
+    site.ride = site.rides.find((ride) => ride.ride_id === site.rideId) || null;
     updateRouteStamp();
 
     if (!site.rides.length) {
-      appendText(list, 'li', 'empty-state', 'No departures are available right now. Check back soon.');
+      appendText(list, 'li', 'empty-state', 'No rides are available right now. Check back soon.');
       updateSummary();
       return;
     }
@@ -102,9 +102,9 @@ async function loadSiteRides() {
       const item = document.createElement('li');
       const button = document.createElement('button');
       button.type = 'button';
-      button.className = `ride-row${ride.ride_id === site.tripId ? ' sel' : ''}`;
-      button.dataset.tripId = String(ride.ride_id);
-      button.setAttribute('aria-pressed', String(ride.ride_id === site.tripId));
+      button.className = `ride-row${ride.ride_id === site.rideId ? ' sel' : ''}`;
+      button.dataset.rideId = String(ride.ride_id);
+      button.setAttribute('aria-pressed', String(ride.ride_id === site.rideId));
       button.setAttribute('aria-label', `${ride.pickup_city} to ${ride.dropoff_city}, ${ride.operator} ${ride.cab_type}, pickup ${formatTime(ride.pickup_at)}, from ${money.format(Number(ride.min_fare))}, ${ride.free_seats} seats available`);
 
       const operator = appendText(button, 'span', 'ride-operator-wrap', '');
@@ -129,43 +129,43 @@ async function loadSiteRides() {
       appendText(price, 'small', '', `${ride.free_seats} seats left`);
 
       button.addEventListener('click', () => {
-        selectTrip(ride.ride_id).catch((error) => { $s('ride-error').textContent = error.message; });
+        selectRide(ride.ride_id).catch((error) => { $s('ride-error').textContent = error.message; });
       });
       item.appendChild(button);
       list.appendChild(item);
     }
 
-    if (site.tripId != null) await loadCoach();
+    if (site.rideId != null) await loadCab();
     updateSummary();
   } catch (error) {
     count.textContent = 'Rides unavailable';
     list.textContent = '';
-    appendText(list, 'li', 'empty-state', 'We couldn’t load departures. Check that the app and database are running.');
+    appendText(list, 'li', 'empty-state', 'We couldn’t load rides. Check that the app and database are running.');
     $s('ride-error').textContent = error.message;
   }
 }
 
-async function selectTrip(tripId) {
-  site.tripId = tripId;
-  site.ride = site.rides.find((ride) => ride.ride_id === tripId) || null;
+async function selectRide(rideId) {
+  site.rideId = rideId;
+  site.ride = site.rides.find((ride) => ride.ride_id === rideId) || null;
   site.seat = null;
   updateRouteStamp();
   $s('pax-error').textContent = '';
   for (const button of $s('ride-list').querySelectorAll('.ride-row')) {
-    button.classList.toggle('sel', Number(button.dataset.tripId) === tripId);
+    button.classList.toggle('sel', Number(button.dataset.rideId) === rideId);
     button.setAttribute('aria-pressed', String(button.classList.contains('sel')));
   }
-  await loadCoach();
+  await loadCab();
   updateSummary();
 }
 
 // 2 + aisle + 2 seat map, built from the live ride inventory.
-async function loadCoach() {
-  if (site.tripId == null) {
+async function loadCab() {
+  if (site.rideId == null) {
     $s('cab-map').textContent = '';
     return;
   }
-  const body = await jfetch(`/api/rides/${site.tripId}/seats`);
+  const body = await jfetch(`/api/rides/${site.rideId}/seats`);
   if (site.seat) {
     const currentSeat = body.rows.find((item) => item.seat_id === site.seat.seat_id);
     if (!currentSeat || currentSeat.booking_id != null) {
@@ -213,20 +213,20 @@ async function loadCoach() {
       if (site.seat && seat.seat_id === site.seat.seat_id) button.classList.add('selected');
       appendText(button, 'span', 'seatx', booked ? '×' : '');
       appendText(button, 'span', 'slabel', seat.seat_no);
-      button.addEventListener('click', () => selectCoachSeat(seat));
+      button.addEventListener('click', () => selectCabSeat(seat));
       row.appendChild(button);
     }
   }
 }
 
-function selectCoachSeat(seat) {
+function selectCabSeat(seat) {
   if (seat.booking_id != null) {
     $s('pax-error').textContent = `Seat ${seat.seat_no} is already booked by ${seat.passenger_name}.`;
     return;
   }
   $s('pax-error').textContent = '';
   site.seat = seat;
-  loadCoach().catch((error) => { $s('site-error').textContent = error.message; });
+  loadCab().catch((error) => { $s('site-error').textContent = error.message; });
   updateSummary();
 }
 
@@ -309,7 +309,7 @@ async function siteBook() {
   let bookingId = null;
   try {
     const body = await jpost('/api/book', {
-      ride_id: site.tripId,
+      ride_id: site.rideId,
       seat_id: site.seat.seat_id,
       passenger_id: site.paxId,
       luggage_kg: luggageKg,

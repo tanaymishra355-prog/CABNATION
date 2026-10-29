@@ -1,7 +1,7 @@
 {
   "name": "cabnation",
   "version": "1.0.0",
-  "description": "BusNation intercity cab ticket booking and RDBMS teaching demo.",
+  "description": "CabNation intercity cab ticket booking and RDBMS teaching demo.",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
