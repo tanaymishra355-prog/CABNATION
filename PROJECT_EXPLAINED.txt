@@ -1,0 +1,212 @@
+CABNATION — CAB TICKETING SYSTEM AND RDBMS DEMO
+============================================================
+
+A. WHAT THE PROJECT DOES
+------------------------------------------------------------
+
+CABNATION is a local intercity cab ticketing app. A passenger browses rides,
+checks live seats, selects a passenger, adds optional luggage, and confirms a
+ticket. Tickets can be cancelled without deleting their history.
+
+The app also makes its database work visible for a class presentation:
+tables, SQL, database constraints, transaction traces, row locks, and an
+audit log. A booking website and an operations console use the same API and
+MySQL database.
+
+Architecture:
+
+    Browser (public/index.html, site.js, app.js)
+        -> Express API (server.js)
+        -> MySQL pool and table whitelist (db.js)
+        -> cabnation database (schema.sql + seed.sql)
+
+B. PROJECT FILES
+------------------------------------------------------------
+
+    public/index.html      Booking site and RDBMS console markup
+    public/site.js         Rides, seat map, passenger and ticket flow
+    public/app.js          Operations actions, SQL, table explorer and logs
+    public/style.css       Responsive CABNATION visual styles
++    api/index.js           Vercel serverless entry for the Express app
++    vercel.json            Route rewrites for the Vercel deployment
+    server.js              Express routes and transaction logic
+    db.js                  MySQL pool, safe table-read whitelist, helpers
+    schema.sql             Tables, keys, constraints and triggers
+    seed.sql               Repeatable demo data
+    sql/1nf.sql             1NF luggage-list view
+    sql/2nf.sql             2NF ride-fact views
+    sql/3nf.sql             3NF passenger/ride views
+    README.md               Setup and quick start
+
+C. THE DATABASE MODEL
+------------------------------------------------------------
+
+The cabnation database has 11 tables:
+
+- stands: boarding and arrival stands, city and short code.
+- cabs: operator, cab name and service type.
+- rides: one scheduled run, its cab, two stands and departure/arrival.
+- seats: seats and fares for a particular ride; rows 1–2 are front row.
+- passengers: a person's name, unique email and optional phone.
+- bookings: a passenger's confirmed or cancelled ticket and selected seat.
+- payments: one simulated payment record per ticket.
+- luggage: optional checked luggage rows and fees.
+- audit_log: trigger-written before/after records for seat and ticket data.
+- unnormalized_bookings: intentionally repeated facts for normalization demos.
+- demo_numbers: helper numbers used to split flat luggage lists in the 1NF view.
+
+The sample data has six stands, three cabs, three rides, 72 seats, six
+passengers and four example tickets. It covers Mumbai–Pune, Delhi–Jaipur, and
+Bengaluru–Chennai.
+
+D. NORMALIZATION
+------------------------------------------------------------
+
+unnormalized_bookings repeats passenger, operator, ride, route, seat, fare and
+payment details in every row. Its luggage column can hold a comma-separated
+list. This is the deliberately flawed teaching example.
+
+- 1NF: sql/1nf.sql creates bookings_1nf, turning each luggage item into its
+  own row. demo_numbers contains 1–50; empty luggage produces one empty item.
+- 2NF: sql/2nf.sql separates ride/route facts from ticket facts in rides_2nf
+  and bookings_2nf.
+- 3NF: sql/3nf.sql separates passengers_3nf and rides_3nf from bookings_3nf.
+  The lesson views use passenger_email as a stable business-key reference;
+  the real application uses passenger_id as its primary/foreign key.
+
+The three view scripts are optional. Run them after schema.sql and seed.sql
+to enable those extra tabs in the operations console.
+
+E. INTEGRITY RULES
+------------------------------------------------------------
+
+MySQL enforces rules independently of the browser:
+
+- Primary keys identify each stand, cab, ride, seat and ticket.
+- Foreign keys stop a ride from using missing stands/cabs and a ticket
+  from referring to a seat on a different ride.
+- UNIQUE(ride_id, seat_no) prevents duplicate seat labels on one ride.
+- passengers.email is UNIQUE; payments.booking_id is UNIQUE.
+- CHECK rules reject same-stand rides, invalid times, negative fares and
+  luggage weights outside 1–40 kg.
+- active_seat_id is generated as seat_id for CONFIRMED bookings and NULL for
+  CANCELLED bookings. Its unique index makes a seat exclusive even if a write
+  bypasses the Node booking endpoint or races another connection.
+- Triggers also reject a duplicate confirmed seat with a readable SQLSTATE
+  45000 error. The unique key is the final race-safe guard.
+
+F. BOOKING TRANSACTION
+------------------------------------------------------------
+
+POST /api/book performs these steps on one dedicated MySQL connection:
+
+    BEGIN
+    SELECT seat ... FOR UPDATE
+    INSERT booking
+    INSERT payment
+    INSERT optional luggage
+    COMMIT
+
+The row lock serializes requests for the same seat. If any insert fails, the
+server executes ROLLBACK. The booking, payment, luggage and their audit rows
+all roll back together. A forced-failure button can stop the transaction
+after the booking, payment or luggage insert to demonstrate atomicity.
+
+Cancelling a ticket is another transaction: change its status to CANCELLED,
+void the simulated payment record, then commit. The historical ticket stays
+in the database and its seat becomes bookable again.
+
+G. ACID AND ISOLATION DEMOS
+------------------------------------------------------------
+
+- Atomicity: force a mid-booking failure and see ROLLBACK with no partial
+  booking/payment/luggage records.
+- Consistency: the foreign-key, unique-email, luggage-check and duplicate-seat
+  buttons ask MySQL to reject invalid data.
+- Isolation: connection A locks a free seat and writes a ticket/payment;
+  connection B tries the same seat and waits. When A commits, B resumes and
+  is rejected by the trigger/unique active-seat key.
+- Durability: after a committed ticket, restarting Node does not remove the
+  MySQL rows.
+
+The booking endpoint uses SELECT ... FOR UPDATE. The database unique key is
+also needed because the SQL teaching console permits direct INSERT/UPDATE
+statements that do not use that application lock.
+
+Indexes. You never write CREATE INDEX, yet indexes exist everywhere:
+
+- every PRIMARY KEY is the table's clustered index (InnoDB stores rows in
+  primary-key order);
+- every UNIQUE constraint (passengers.email, rides.ride_no,
+  UNIQUE(ride_id, seat_no), payments.booking_id, bookings.active_seat_id) is
+  backed by a unique index — that index is also how MySQL detects duplicate
+  values instantly when raising error 1062;
+- every FOREIGN KEY gets an index on its columns so parent/child checks are
+  fast (visible via SHOW CREATE TABLE bookings).
+
+The seat-lock demo's subquery WHERE seat_id = ... AND status = 'CONFIRMED'
+is fast because the schema adds KEY idx_booking_seat_status (seat_id, status),
+and ride listings sort by pickup_at through KEY idx_trip_departure.
+
+Demonstrate with: SHOW CREATE TABLE bookings; (the SQL box only allows
+SELECT/INSERT/UPDATE/DELETE, so run SHOW in the MySQL console).
+
+H. TRIGGERS AND LOGS
+------------------------------------------------------------
+
+The schema creates 14 triggers:
+
+- 2 BEFORE triggers protect confirmed-seat bookings on INSERT and UPDATE.
+- 12 AFTER triggers record INSERT, UPDATE and DELETE changes on bookings,
+  payments, luggage and seats.
+
+Audit rows share the same transaction as the write. A rollback removes its
+audit rows too. Master data and the unnormalized teaching table are not in the
+trigger audit scope; the log is not a full database-wide history.
+
+The optional MySQL general query log is different: when enabled, it records
+raw server statements, including reads and statements later rolled back. It
+is off by default and may require a MySQL administrative account to enable.
+
+I. API MAP
+------------------------------------------------------------
+
+    GET  /api/health                 Confirm cabnation DB/schema is ready
+    GET  /api/rides                  List schedules, fares and free seats
+    GET  /api/rides/:id/seats        Read a ride's seat inventory
+    POST /api/passengers             Add a passenger
+    GET  /api/bookings?passenger_id= View a passenger's tickets
+    POST /api/book                   Book seat + payment + optional luggage
+    POST /api/cancel/:bookingId      Cancel a ticket and release its seat
+    POST /api/setup                  One-time hosted-DB bootstrap (SETUP_TOKEN)
+    GET  /api/table/:name            Read an allowlisted table/view
+    POST /api/query                  Run one teaching SQL statement
+    POST /api/constraint-demo        Demonstrate FK/UNIQUE/CHECK/trigger rules
+    POST /api/isolation-demo         Demonstrate two-connection seat locking
+    GET  /api/logs/audit             Read trigger-written audit rows
+    GET  /api/logs/general           Read MySQL's optional general log
+    POST /api/reset                  Restore the sample data
+
+The SQL console is intended for a local classroom demo. It accepts one
+SELECT, INSERT, UPDATE or DELETE statement; it is not a production admin API.
+
+J. RUNNING THE APP
+------------------------------------------------------------
+
+Requirements: Node.js 18+ and MySQL 8.0.16+.
+
+    npm ci
+    cp .env.example .env
+    # Set DB_USER and DB_PASSWORD in .env
+    mysql -u root -p < schema.sql
+    mysql -u root -p < seed.sql
+    npm start
+
+Open http://localhost:3000. schema.sql drops and recreates the cabnation
+database. seed.sql clears and restores only its sample rows. Do not run these
+against data you need.
+
+Payments are simulated; the demo has no payment provider or user login. Keep
+the operations console on localhost and do not expose it as a public service
+without adding authentication, real payment integration and stricter API/DB
+permissions.
